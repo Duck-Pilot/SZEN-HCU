@@ -82,6 +82,12 @@
     uint8_t cell_t_14 = 0;
     uint8_t cell_t_15 = 0;
     uint8_t cell_t_16 = 0;
+  // Overtemperature counters 
+  // incremented after every overtemp measurement, turn off the contactor if it's over 4 (>1 second) 
+    uint8_t overtemp_counter0 = 0;
+    uint8_t overtemp_counter1 = 0;
+    uint8_t overtemp_counter2 = 0;
+    uint8_t overtemp_counter3 = 0;
   // Cell voltages [mV]
     uint16_t cell_v_1 = 0;
     uint16_t cell_v_2 = 0;
@@ -131,6 +137,9 @@
       uint8_t fan_pwm = 0;
       uint8_t mux_channel = 0;
   // CAN outputs
+      ACAN2515 mcp_can(cs, SPI, mcp_int);
+      uint16_t vesc_left_current_target = 0;
+      uint16_t vesc_right_current_target = 0;
 
   // Gyro data
 
@@ -186,7 +195,7 @@
   
   
   ASM330LHHSensor Gyro(&Wire, 0x6A);
-  ACAN2515 mcp_can(cs, SPI, mcp_int);
+  
 
 void initialise() {
   // Setup outputs
@@ -403,46 +412,60 @@ uint8_t resistance_temp(float resistance) {
 }
 
 bool read_cell_temp() {
-  // read analog -> switch mux -> repeat 3x
+  // switch the mux channel
     mux_channel++;
     if (mux_channel > 3) {
       mux_channel = 0;}
     switch_mux(mux_channel);
+  // read the 4 resistances
     float resistance_1 = float((2490000/analogReadMilliVolts(temp_s_1))-2490);
     float resistance_2 = float((2490000/analogReadMilliVolts(temp_s_2))-2490);
     float resistance_3 = float((2490000/analogReadMilliVolts(temp_s_3))-2490);
     float resistance_4 = float((2490000/analogReadMilliVolts(temp_s_4))-2490);
-
+  // convert the resistances to temperatures and store them in the correct variables
     switch(mux_channel) {
       case 0:
         cell_t_1 = resistance_temp(resistance_1);
         cell_t_2 = resistance_temp(resistance_2);
         cell_t_3 = resistance_temp(resistance_3);
         cell_t_4 = resistance_temp(resistance_4);
+        // check if any temperature is over 60°C
+        if (cell_t_1 > 60 || cell_t_2 > 60 || cell_t_3 > 60 || cell_t_4 > 60) {overtemp_counter0++;}
+        else {overtemp_counter0 = 0;}
+        if (overtemp_counter0 > 4) {return false;}
         break;
       case 1:
         cell_t_5 = resistance_temp(resistance_1);
         cell_t_6 = resistance_temp(resistance_2);
         cell_t_7 = resistance_temp(resistance_3);
         cell_t_8 = resistance_temp(resistance_4);
+        // check if any temperature is over 60°C
+        if (cell_t_5 > 60 || cell_t_6 > 60 || cell_t_7 > 60 || cell_t_8 > 60) {overtemp_counter1++;}
+        else {overtemp_counter1 = 0;}
+        if (overtemp_counter1 > 4) {return false;}
         break;
       case 2:
         cell_t_9 = resistance_temp(resistance_1);
         cell_t_10 = resistance_temp(resistance_2);
         cell_t_11 = resistance_temp(resistance_3);
         prechg_t_12 = resistance_temp(resistance_4);
+        // check if any temperature is over 60°C
+        if (cell_t_9 > 60 || cell_t_10 > 60 || cell_t_11 > 60 || prechg_t_12 > 60) {overtemp_counter2++;}
+        else {overtemp_counter2 = 0;}
+        if (overtemp_counter2 > 4) {return false;}
         break;
       case 3:
         cell_t_13 = resistance_temp(resistance_1);
         cell_t_14 = resistance_temp(resistance_2);
         cell_t_15 = resistance_temp(resistance_3);
         cell_t_16 = resistance_temp(resistance_4);
+        // check if any temperature is over 60°C
+        if (cell_t_13 > 60 || cell_t_14 > 60 || cell_t_15 > 60 || cell_t_16 > 60) {overtemp_counter3++;}
+        else {overtemp_counter3 = 0;}
+        if (overtemp_counter3 > 4) {return false;}
         break;
-    }
+    }  
 
-    
-    //digitalWrite(mux_1_out, HIGH);
-    //digitalWrite(mux_2_out, HIGH);
     Serial.print(resistance_1);
     Serial.print(" ");
     Serial.print(resistance_2);
@@ -451,6 +474,82 @@ bool read_cell_temp() {
     Serial.print(" ");
     Serial.println(resistance_4);
   return true;
+}
+
+void send_cell_temp_can() {
+  // send the first 8 temperatures
+    CANMessage display_temp_1;
+    display_temp_1.id = 0x600;
+    display_temp_1.len = 8;
+    display_temp_1.data[0] = cell_t_1;
+    display_temp_1.data[1] = cell_t_2;
+    display_temp_1.data[2] = cell_t_3;
+    display_temp_1.data[3] = cell_t_4;
+    display_temp_1.data[4] = cell_t_5;
+    display_temp_1.data[5] = cell_t_6;
+    display_temp_1.data[6] = cell_t_7;
+    display_temp_1.data[7] = cell_t_8;
+    mcp_can.tryToSend(display_temp_1);
+  // send the second 8 temperatures
+    CANMessage display_temp_2;
+    display_temp_2.id = 0x601;
+    display_temp_2.len = 8;
+    display_temp_2.data[0] = cell_t_9;
+    display_temp_2.data[1] = cell_t_10;
+    display_temp_2.data[2] = cell_t_11;
+    display_temp_2.data[3] = prechg_t_12;
+    display_temp_2.data[4] = cell_t_13;
+    display_temp_2.data[5] = cell_t_14;
+    display_temp_2.data[6] = cell_t_15;
+    display_temp_2.data[7] = cell_t_16; 
+    mcp_can.tryToSend(display_temp_2);
+}
+
+void send_cell_voltage_can() {
+  // send the first 4 voltages
+    CANMessage display_voltage_1;
+    display_voltage_1.id = 0x610;
+    display_voltage_1.len = 8;
+    display_voltage_1.data16[0] = cell_v_1;
+    display_voltage_1.data16[1] = cell_v_2;
+    display_voltage_1.data16[2] = cell_v_3;
+    display_voltage_1.data16[3] = cell_v_4;
+    mcp_can.tryToSend(display_voltage_1);
+  // send the second 4 voltages
+    CANMessage display_voltage_2;
+    display_voltage_2.id = 0x611;
+    display_voltage_2.len = 8;
+    display_voltage_2.data16[0] = cell_v_5;
+    display_voltage_2.data16[1] = cell_v_6;
+    display_voltage_2.data16[2] = cell_v_7;
+    display_voltage_2.data16[3] = cell_v_8;
+    mcp_can.tryToSend(display_voltage_2);
+  // send the last 2 voltages, output voltage and battery current
+    CANMessage display_voltage_3;
+    display_voltage_3.id = 0x612;
+    display_voltage_3.len = 8;
+    display_voltage_3.data16[0] = cell_v_9;
+    display_voltage_3.data16[1] = cell_v_10;
+    display_voltage_3.data16[2] = hsc_output;
+    display_voltage_3.data16[3] = battery_current;
+    mcp_can.tryToSend(display_voltage_3);
+}
+
+void send_vesc_can() {
+  // send the requested current to left VESC ID 79
+    CANMessage vesc_left_current_msg;
+    vesc_left_current_msg.id = 0x014F;
+    vesc_left_current_msg.len = 8;
+    vesc_left_current_msg.ext = true;
+    vesc_left_current_msg.data16[0] = vesc_left_current_target;
+    can.tryToSend(vesc_left_current_msg);
+  // send the requested current to right VESC ID 108
+    CANMessage vesc_right_current_msg;
+    vesc_right_current_msg.id = 0x016C;
+    vesc_right_current_msg.len = 8;
+    vesc_right_current_msg.ext = true;
+    vesc_right_current_msg.data16[0] = vesc_right_current_target;
+    can.tryToSend(vesc_right_current_msg);
 }
 
 void setup() {
@@ -481,6 +580,7 @@ void loop() {
 //    read_cell_temp();
 
     update_cell_voltage();
+    read_cell_temp();
     update_battery_current();
     update_bms_state();
     Serial.print(cell_v_1);
