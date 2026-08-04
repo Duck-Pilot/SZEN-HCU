@@ -205,8 +205,8 @@ void initialise() {
     pinMode(mux_2_out,        OUTPUT);
     digitalWrite(bms_ign_out,      0);
     digitalWrite(contactor_en_out, 0);
-    digitalWrite(mux_1_out,        0);
-    digitalWrite(mux_2_out,        0);
+    digitalWrite(mux_1_out,        1);
+    digitalWrite(mux_2_out,        1);
   // Setup pwm
     ledcSetup(0, 5000, 8);
     ledcAttachPin(fan_pwm_out, 0);
@@ -240,15 +240,15 @@ void initialise() {
     ACAN_ESP32::can.begin(esp_can_settings);
   // Setup UART for TinyBMS
     Serial2.begin(115200, SERIAL_8N1, bms_rx, bms_tx, false);
-    //reset_BMS();
+    reset_BMS();
 
 }
 
 void switch_mux(uint8_t channel) {
-  if((channel & 1) != 0) {
+  if((channel & 0x01) != 0) {
     digitalWrite(mux_1_out, HIGH);
   } else {digitalWrite(mux_1_out, LOW);}
-  if((channel & 2) != 0) {
+  if((channel & 0x02) != 0) {
     digitalWrite(mux_2_out, HIGH);
   } else {digitalWrite(mux_2_out, LOW);}
   return;
@@ -289,7 +289,7 @@ bool update_cell_voltage() {
     uint8_t uartCRC[2] = {};
     Serial2.readBytes(uartCRC, 2);    
   // generate CRC for the message that was received
-    if(CRC16(uartReceived, 23) != uartCRC[1] | (uartCRC[0]<<8)) {
+    if(CRC16(uartReceived, 23) != (uartCRC[0] | (uartCRC[1]<<8))) {
       return false;}
   // process the received data
     cell_v_1 = uartReceived[4] | (uartReceived[3]<<8);
@@ -327,7 +327,7 @@ bool update_battery_current() {
     uint8_t uartCRC[2] = {};
     Serial2.readBytes(uartCRC, 2);
   // generate CRC for the message that was received
-    if(CRC16(uartReceived, 6) != uartCRC[1] | (uartCRC[0]<<8)) {
+    if(CRC16(uartReceived, 6) != (uartCRC[0] | (uartCRC[1]<<8))) {
       return false;}
   // process the received data
     uint32_t temp = uartReceived[2] | (uartReceived[3]<<8) | (uartReceived[4]<<16) | (uartReceived[5]<<24);
@@ -357,7 +357,7 @@ bool update_bms_state() {
     uint8_t uartCRC[2] = {};
     Serial2.readBytes(uartCRC, 2);
   // generate CRC for the message that was received
-    if(CRC16(uartReceived, 4) != uartCRC[1] | (uartCRC[0]<<8)) {
+    if(CRC16(uartReceived, 4) != (uartCRC[0] | (uartCRC[1]<<8))) {
       return false;}
   // process the received data
     tinyBMS_state = uartReceived[3] | (uartReceived[2]<<8);
@@ -393,7 +393,7 @@ bool reset_BMS() {
   // generate CRC for the message that was received
     uint8_t uartCRC[2] = {};
     Serial2.readBytes(uartCRC, 2);
-    if (CRC16(uartReceived, 3) != uartCRC[1] | (uartCRC[0]<<8)) {
+    if (CRC16(uartReceived, 3) != (uartCRC[0] | (uartCRC[1]<<8))) {
       return false;}
     delay(10000);
   return true;
@@ -411,17 +411,17 @@ uint8_t resistance_temp(float resistance) {
   return uint8_t(steinhart);
 }
 
-bool read_cell_temp() {
+bool check_cell_temp() {
   // switch the mux channel
     mux_channel++;
     if (mux_channel > 3) {
       mux_channel = 0;}
-    switch_mux(mux_channel);
+    switch_mux(mux_channel); 
   // read the 4 resistances
-    float resistance_1 = float((2490000/analogReadMilliVolts(temp_s_1))-2490);
-    float resistance_2 = float((2490000/analogReadMilliVolts(temp_s_2))-2490);
-    float resistance_3 = float((2490000/analogReadMilliVolts(temp_s_3))-2490);
-    float resistance_4 = float((2490000/analogReadMilliVolts(temp_s_4))-2490);
+    float resistance_1 = float((8052000/(analogReadMilliVolts(temp_s_1)+1))-2440);
+    float resistance_2 = float((8052000/(analogReadMilliVolts(temp_s_2)+1))-2440);
+    float resistance_3 = float((8052000/(analogReadMilliVolts(temp_s_3)+1))-2440);
+    float resistance_4 = float((8052000/(analogReadMilliVolts(temp_s_4)+1))-2440);
   // convert the resistances to temperatures and store them in the correct variables
     switch(mux_channel) {
       case 0:
@@ -429,7 +429,7 @@ bool read_cell_temp() {
         cell_t_2 = resistance_temp(resistance_2);
         cell_t_3 = resistance_temp(resistance_3);
         cell_t_4 = resistance_temp(resistance_4);
-        // check if any temperature is over 60°C
+      // check if any temperature is over 60°C
         if (cell_t_1 > 60 || cell_t_2 > 60 || cell_t_3 > 60 || cell_t_4 > 60) {overtemp_counter0++;}
         else {overtemp_counter0 = 0;}
         if (overtemp_counter0 > 4) {return false;}
@@ -439,7 +439,7 @@ bool read_cell_temp() {
         cell_t_6 = resistance_temp(resistance_2);
         cell_t_7 = resistance_temp(resistance_3);
         cell_t_8 = resistance_temp(resistance_4);
-        // check if any temperature is over 60°C
+      // check if any temperature is over 60°C
         if (cell_t_5 > 60 || cell_t_6 > 60 || cell_t_7 > 60 || cell_t_8 > 60) {overtemp_counter1++;}
         else {overtemp_counter1 = 0;}
         if (overtemp_counter1 > 4) {return false;}
@@ -449,7 +449,7 @@ bool read_cell_temp() {
         cell_t_10 = resistance_temp(resistance_2);
         cell_t_11 = resistance_temp(resistance_3);
         prechg_t_12 = resistance_temp(resistance_4);
-        // check if any temperature is over 60°C
+      // check if any temperature is over 60°C
         if (cell_t_9 > 60 || cell_t_10 > 60 || cell_t_11 > 60 || prechg_t_12 > 60) {overtemp_counter2++;}
         else {overtemp_counter2 = 0;}
         if (overtemp_counter2 > 4) {return false;}
@@ -459,20 +459,12 @@ bool read_cell_temp() {
         cell_t_14 = resistance_temp(resistance_2);
         cell_t_15 = resistance_temp(resistance_3);
         cell_t_16 = resistance_temp(resistance_4);
-        // check if any temperature is over 60°C
+      // check if any temperature is over 60°C
         if (cell_t_13 > 60 || cell_t_14 > 60 || cell_t_15 > 60 || cell_t_16 > 60) {overtemp_counter3++;}
         else {overtemp_counter3 = 0;}
         if (overtemp_counter3 > 4) {return false;}
         break;
     }  
-
-    Serial.print(resistance_1);
-    Serial.print(" ");
-    Serial.print(resistance_2);
-    Serial.print(" ");
-    Serial.print(resistance_3);
-    Serial.print(" ");
-    Serial.println(resistance_4);
   return true;
 }
 
@@ -542,14 +534,14 @@ void send_vesc_can() {
     vesc_left_current_msg.len = 8;
     vesc_left_current_msg.ext = true;
     vesc_left_current_msg.data16[0] = vesc_left_current_target;
-    can.tryToSend(vesc_left_current_msg);
+    ACAN_ESP32::can.tryToSend(vesc_left_current_msg);
   // send the requested current to right VESC ID 108
     CANMessage vesc_right_current_msg;
     vesc_right_current_msg.id = 0x016C;
     vesc_right_current_msg.len = 8;
     vesc_right_current_msg.ext = true;
     vesc_right_current_msg.data16[0] = vesc_right_current_target;
-    can.tryToSend(vesc_right_current_msg);
+    ACAN_ESP32::can.tryToSend(vesc_right_current_msg);
 }
 
 void setup() {
@@ -577,38 +569,67 @@ void loop() {
     //  Serial.println(Serial2.read(), HEX);
     //  delay(25);
     //}
-//    read_cell_temp();
+
 
     update_cell_voltage();
-    read_cell_temp();
+    check_cell_temp();
     update_battery_current();
     update_bms_state();
     Serial.print(cell_v_1);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_2);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_3);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_4);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_5);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_6);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_7);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_8);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.print(cell_v_9);
-    Serial. print(" ");
+    Serial.print(" ");
     Serial.println(cell_v_10);
+
+    Serial.print(cell_t_1);
+    Serial.print(" ");
+    Serial.print(cell_t_2);
+    Serial.print(" ");
+    Serial.print(cell_t_3);
+    Serial.print(" ");
+    Serial.print(cell_t_4);
+    Serial.print(" ");
+    Serial.print(cell_t_5);
+    Serial.print(" ");
+    Serial.print(cell_t_6);
+    Serial.print(" ");
+    Serial.print(cell_t_7);
+    Serial.print(" ");
+    Serial.print(cell_t_8);
+    Serial.print(" ");
+    Serial.print(cell_t_9);
+    Serial.print(" ");
+    Serial.print(cell_t_10);
+    Serial.print(" ");
+    Serial.print(cell_t_11);
+    Serial.print(" ");
+    Serial.print(prechg_t_12);
+    Serial.print(" ");
+    Serial.print(cell_t_13);
+    Serial.print(" ");
+    Serial.print(cell_t_14);
+    Serial.print(" ");
+    Serial.print(cell_t_15);
+    Serial.print(" ");
+    Serial.println(cell_t_16);
+
+    Serial.print(battery_current);
+    Serial.print(" ");
     Serial.println(tinyBMS_state>>8, HEX);
-    delay(250);
-    //Serial.print(" ");
-    //Serial.print(angular_rate[0]);
-    //Serial.print(" ");
-    //Serial.print(angular_rate[1]);
-    //Serial.print(" ");
-    //Serial.println(angular_rate[2]);
+    delay(1000);
     
 }
