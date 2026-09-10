@@ -47,8 +47,8 @@
   // Fan power input sense
     #define hsc_12v_s 47
   // Driver input sensors
-    #define brake_s_1 8
-    #define brake_s_2 9
+    #define brake_s_1 8 // unused
+    #define brake_s_2 9 // unused
     #define steering_s_1 1
     #define steering_s_2 2
 
@@ -82,12 +82,15 @@
     uint8_t cell_t_14 = 0;
     uint8_t cell_t_15 = 0;
     uint8_t cell_t_16 = 0;
+    uint8_t avg_cell_t = 0;
   // Overtemperature counters 
   // incremented after every overtemp measurement, turn off the contactor if it's over 4 (>1 second) 
     uint8_t overtemp_counter0 = 0;
     uint8_t overtemp_counter1 = 0;
     uint8_t overtemp_counter2 = 0;
     uint8_t overtemp_counter3 = 0;
+  // counts bad sensors (improbable reading), resets after every measurement cycle 
+    uint8_t temp_error_counter = 0;
   // Cell voltages [mV]
     uint16_t cell_v_1 = 0;
     uint16_t cell_v_2 = 0;
@@ -99,23 +102,26 @@
     uint16_t cell_v_8 = 0;
     uint16_t cell_v_9 = 0;
     uint16_t cell_v_10 = 0;
+  // Voltage error timeout counters
+    uint8_t overvoltage_timeout_counter = 0;
+    uint8_t undervoltage_timeout_counter = 0;
   // Driver inputs [%]
-    uint8_t throttle = 0;
-    uint8_t brake = 0;
     int16_t steering = 0;
-    uint8_t gear = 0;
     bool clutch = 0;
     bool ALS_active = 0;
   // Voltage sense [V/10]
     uint16_t hsc_output = 0;
-    uint8_t hsc_12V = 0;
-    uint8_t sdc_voltage = 0;
+    uint16_t hsc_12V = 0;
+    uint16_t sdc_voltage = 0;
   // Current sense [A/10]
     float battery_current = 0;
     union {
       uint8_t raw[4];
       float f;
     } hsc_current;
+  // Current error timeout counters
+    uint8_t overcurrent_timeout_counter = 0;
+    uint8_t undercurrent_timeout_counter = 0;
   // VESC data
     // Current [A/10]
       int16_t vesc_left_current = 0;
@@ -133,8 +139,11 @@
       uint8_t motor_right_temp = 0;
   // Electrical outputs
       bool bms_ign = 0;
+      bool last_bms_ign = 0;
       bool contactor_en = 0;
+      bool last_contactor_en = 0;
       uint8_t fan_pwm = 0;
+      uint16_t max_duty = 0;
       uint8_t mux_channel = 0;
   // CAN outputs
       ACAN2515 mcp_can(cs, SPI, mcp_int);
@@ -149,10 +158,26 @@
     uint8_t read_battery_current[4] = {0xAA, 0x15, 0xBE, 0xDF};
     uint8_t read_bms_state[4] = {0xAA, 0x18, 0x7F, 0x1A};
     uint8_t reset_tinybms[5] = {0xAA, 0x02, 0x05, 0x90, 0x83};
-    uint8_t dummy_data[6] = {0xAA, 0x02, 0x05};
+    //uint8_t dummy_data[6] = {0xAA, 0x02, 0x05};
     uint8_t input_data[] = {};
     uint16_t tinyBMS_state = 0x00;
+  // TinyBMS timeout counters
+    uint8_t bms_v_timeout_counter = 0;
+    uint8_t bms_c_timeout_counter = 0;
+    uint8_t bms_s_timeout_counter = 0;
 
+  // MaxxECU data
+    uint16_t ecu_rpm = 0;
+    uint8_t ecu_gear = 0;
+    uint8_t ecu_speed = 0;
+    uint16_t ecu_apps = 0;
+    uint16_t ecu_brake_pressure = 0;
+
+    bool engine_running = 0;
+    uint8_t engine_state_counter = 0;
+    uint16_t ecu_rpm_timeout_counter = 0;
+    uint16_t ecu_gear_timeout_counter = 0;
+    uint16_t ecu_apps_timeout_counter = 0;
   // Functional variables
     uint8_t adc_cont_pins[] = {hsc_out_s, sdc_s, hsc_12v_s, brake_s_1, brake_s_2, steering_s_1, steering_s_2};
     static const uint32_t mcp_freq = 10000000;
@@ -192,7 +217,13 @@
       0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
     };
   
-  
+  // Task handles
+    TaskHandle_t safety_task;        // core 0
+    TaskHandle_t CAN_input_task;     // core 0
+    TaskHandle_t analog_input_task;  // core 0
+    TaskHandle_t VESC_output_task;   // core 1
+    TaskHandle_t dash_output_task;   // core 1
+    TaskHandle_t fan_control_task;   // core 1
   
   ASM330LHHSensor Gyro(&Wire, 0x6A);
   
@@ -211,12 +242,21 @@ void initialise() {
     ledcSetup(0, 5000, 8);
     ledcAttachPin(fan_pwm_out, 0);
     ledcWrite(0, 0);
-  // Setup analog continuous for temperatures
+  // Setup analog for temperatures
+    pinMode(temp_s_1, INPUT);
+    pinMode(temp_s_2, INPUT);
+    pinMode(temp_s_3, INPUT);
+    pinMode(temp_s_4, INPUT);
     analogSetPinAttenuation(temp_s_1, ADC_6db);
     analogSetPinAttenuation(temp_s_2, ADC_6db);
     analogSetPinAttenuation(temp_s_3, ADC_6db);
     analogSetPinAttenuation(temp_s_4, ADC_6db);
   // Setup analog for other inputs
+    pinMode(hsc_out_s, INPUT);
+    pinMode(sdc_s, INPUT);
+    pinMode(hsc_12v_s, INPUT);
+    pinMode(steering_s_1, INPUT);
+    pinMode(steering_s_2, INPUT);
     analogReadResolution(10);
   // Setup Gyro (I2C)
     Wire.begin(sda, scl);
@@ -275,7 +315,7 @@ bool update_cell_voltage() {
     Serial2.write(read_cell_voltage, 8);
   // wait for response
     while (!Serial2.available()) {
-      delay(1);
+      vTaskDelay(1);
     }
   // check first 3 bytes 0xAA, 0x03, PL length
     uint8_t uartReceived[23] = {};
@@ -314,7 +354,7 @@ bool update_battery_current() {
     Serial2.write(read_battery_current, 4);
   // wait for response
     while (!Serial2.available()) {
-      delay(1);
+      vTaskDelay(1);
     }
   // check first 2 bytes 0xAA, 0x15
     uint8_t uartReceived[6] = {};
@@ -344,7 +384,7 @@ bool update_bms_state() {
     Serial2.write(read_bms_state, 4);
   // wait for response
     while (!Serial2.available()) {
-      delay(1);
+      vTaskDelay(1);
     }
   // check first 2 bytes 0xAA, 0x18
     uint8_t uartReceived[4] = {};
@@ -379,7 +419,7 @@ bool reset_BMS() {
     Serial2.write(reset_tinybms, 5);
   // wait for response
     while (!Serial2.available()) {
-      delay(1);
+      vTaskDelay(1);
     }
   // check first 3 bytes 0xAA, 0x01, 0x02
     uint8_t uartReceived[3] = {};
@@ -404,7 +444,7 @@ uint8_t resistance_temp(float resistance) {
   float steinhart;
   steinhart = resistance / 10000;     // (R/Ro)
   steinhart = log(steinhart);          // ln(R/Ro)
-  steinhart /= 3950;                   // 1/B * ln(R/Ro)
+  steinhart /= 3984;                   // 1/B * ln(R/Ro)
   steinhart += 1.0 / (25 + 273.15);    // + (1/To)
   steinhart = 1.0 / steinhart;         // Invert
   steinhart -= 273.15;                 // convert to °C
@@ -433,6 +473,20 @@ bool check_cell_temp() {
         if (cell_t_1 > 60 || cell_t_2 > 60 || cell_t_3 > 60 || cell_t_4 > 60) {overtemp_counter0++;}
         else {overtemp_counter0 = 0;}
         if (overtemp_counter0 > 4) {return false;}
+      // reset the error counter 
+        temp_error_counter = 0;
+      // check if any temperature is over 160°C, will be treated as a bad sensor
+        if (cell_t_1 > 160) {temp_error_counter++;}
+        if (cell_t_2 > 160) {temp_error_counter++;}
+        if (cell_t_3 > 160) {temp_error_counter++;}
+        if (cell_t_4 > 160) {temp_error_counter++;}
+      // check if any temperature is under 10°C, will be treated as a bad sensor
+        if (cell_t_1 < 10) {temp_error_counter++;}
+        if (cell_t_2 < 10) {temp_error_counter++;}
+        if (cell_t_3 < 10) {temp_error_counter++;}
+        if (cell_t_4 < 10) {temp_error_counter++;}
+      // if there are more than 3 bad sensors disable the battery (12 working sensors are required)
+        if (temp_error_counter > 3) {return false;}
         break;
       case 1:
         cell_t_5 = resistance_temp(resistance_1);
@@ -465,6 +519,52 @@ bool check_cell_temp() {
         if (overtemp_counter3 > 4) {return false;}
         break;
     }  
+  return true;
+}
+
+bool check_bms_data() {
+  // cycle runs 16 times every second
+  // returns false if communication is lost or parameters are outside the allowed range for over 1s
+
+  // update voltages from TinyBMS
+    if (!update_cell_voltage()) {bms_v_timeout_counter++;}
+    else {bms_v_timeout_counter = 0;}
+    if (bms_v_timeout_counter > 16) {return false;}
+  // update current from TinyBMS
+    if (!update_battery_current()) {bms_c_timeout_counter++;}
+    else {bms_c_timeout_counter = 0;}
+    if (bms_c_timeout_counter > 16) {return false;}
+  // update state from TinyBMS
+    if (!update_bms_state()) {bms_s_timeout_counter++;}
+    else {bms_s_timeout_counter = 0;}
+    if (bms_s_timeout_counter > 16) {return false;}
+
+  // check if the BMS is in a fault state
+    if (tinyBMS_state == 0x9B) {return false;}
+
+  // check if any cell voltage is over 4.2V
+    if (cell_v_1 > 42000 || cell_v_2 > 42000 || cell_v_3 > 42000 || cell_v_4 > 42000 || cell_v_5 > 42000 
+      || cell_v_6 > 42000 || cell_v_7 > 42000 || cell_v_8 > 42000 || cell_v_9 > 42000 || cell_v_10 > 42000) {overvoltage_timeout_counter++;}
+    else {overvoltage_timeout_counter = 0;}
+    if (overvoltage_timeout_counter >16) {return false;}
+
+  // check if any cell voltage is under 2.5V
+    if (cell_v_1 < 25000 || cell_v_2 < 25000 || cell_v_3 < 25000 || cell_v_4 < 25000 || cell_v_5 < 25000 
+      || cell_v_6 < 25000 || cell_v_7 < 25000 || cell_v_8 < 25000 || cell_v_9 < 25000 || cell_v_10 < 25000) {undervoltage_timeout_counter++;}
+    else {undervoltage_timeout_counter = 0;}
+    if (undervoltage_timeout_counter >16) {return false;}
+
+  // check if current is over 560A
+  // timeout for overcurrent is 3s (datasheet)
+    if (battery_current > 560) {overcurrent_timeout_counter++;}
+    else {overcurrent_timeout_counter = 0;}
+    if (overcurrent_timeout_counter > 48) {return false;}
+
+  // check if charge current is over 60A
+    if (battery_current < -60) {undercurrent_timeout_counter++;}
+    else {undercurrent_timeout_counter = 0;}
+    if (undercurrent_timeout_counter > 16) {return false;}
+  
   return true;
 }
 
@@ -544,9 +644,197 @@ void send_vesc_can() {
     ACAN_ESP32::can.tryToSend(vesc_right_current_msg);
 }
 
+void safety_function(void *parameter) {
+  TickType_t xLastRanSafety;
+  xLastRanSafety = xTaskGetTickCount();
+  TickType_t xSafetyFrequency = 62 / portTICK_PERIOD_MS; // around 16 Hz
+  for (;;) {
+  // check the battery parameters
+    contactor_en = check_cell_temp() && check_bms_data();
+  // change enable output state if it changed
+    if(contactor_en != last_contactor_en) {
+      digitalWrite(contactor_en_out, contactor_en);
+      last_contactor_en = contactor_en;}
+  // output voltages and temperatures for debug
+    Serial.print(cell_v_1);
+    Serial.print(" ");
+    Serial.print(cell_v_2);
+    Serial.print(" ");
+    Serial.print(cell_v_3);
+    Serial.print(" ");
+    Serial.print(cell_v_4);
+    Serial.print(" ");
+    Serial.print(cell_v_5);
+    Serial.print(" ");
+    Serial.print(cell_v_6);
+    Serial.print(" ");
+    Serial.print(cell_v_7);
+    Serial.print(" ");
+    Serial.print(cell_v_8);
+    Serial.print(" ");
+    Serial.print(cell_v_9);
+    Serial.print(" ");
+    Serial.println(cell_v_10);
+  // check MaxxECU if the engine is running
+  // set the engine_running variable high/low after a 5 second delay as a filter
+    if(!engine_running && (ecu_rpm > 1500)) {
+      engine_state_counter++;
+      if (engine_state_counter > 80) {engine_running = true; engine_state_counter = 0;}
+    }
+    if(engine_running && (ecu_rpm < 1500)) {
+      engine_state_counter++;
+      if (engine_state_counter > 80) {engine_running = false; engine_state_counter = 0;}
+    }
+  // check PDU hybrid enable switch (input x)
+    // not implemented I guess
+    bms_ign = engine_running;
+    bms_ign = 1;
+  // change bms ignition output state if it changed
+    if(bms_ign != last_bms_ign) {
+      digitalWrite(bms_ign_out, bms_ign);
+      last_bms_ign = bms_ign;}
+    
+    vTaskDelayUntil(&xLastRanSafety, xSafetyFrequency);
+  }
+}
+
+void CAN_input_function(void *parameter) {
+  TickType_t xLastRanCANInput;
+  xLastRanCANInput = xTaskGetTickCount();
+  TickType_t xCANInputFrequency = 6 / portTICK_PERIOD_MS; // around 150 Hz
+  for (;;) {
+    if (mcp_can.available()) {
+      CANMessage MCP_receive_msg;
+      mcp_can.receive(MCP_receive_msg);
+      switch(MCP_receive_msg.id) {
+        case 0x520:   // RPM
+          ecu_rpm = MCP_receive_msg.data16[0];
+          ecu_rpm_timeout_counter = 0;
+          break;
+        case 0x543:   // Gear, Speed
+          ecu_gear = MCP_receive_msg.data[0];
+          ecu_speed = MCP_receive_msg.data[1];
+          ecu_gear_timeout_counter = 0;
+          break;
+        case 0x630:   // APPS, Brake pressure
+          ecu_apps = MCP_receive_msg.data16[0];
+          ecu_brake_pressure = MCP_receive_msg.data16[1];
+          ecu_apps_timeout_counter = 0;
+          break;
+        // PDU inputs?
+      }
+    }
+    ecu_rpm_timeout_counter++;
+    ecu_gear_timeout_counter++;
+    ecu_apps_timeout_counter++;
+    if (ecu_rpm_timeout_counter  > 166) {ecu_rpm = 0;}
+    if (ecu_gear_timeout_counter > 166) {ecu_gear = 0; ecu_speed = 0;}
+    if (ecu_apps_timeout_counter > 166) {ecu_apps = 0; ecu_brake_pressure = 0;}
+
+
+    vTaskDelayUntil(&xLastRanCANInput, xCANInputFrequency);
+  }
+}
+
+void analog_input_function(void *parameter) {
+  for (;;) {
+    // steering 1
+    // steering 2
+    // output voltage     56k, 3.3k divider
+      hsc_output = analogReadMilliVolts(hsc_out_s) * 179.7;
+    // sdc       9.1k, 3.3k divider
+      sdc_voltage = analogReadMilliVolts(sdc_s) * 37.6;
+    // HY_12V    9.1k, 3.3k divider
+      //hsc_12V = analogReadMilliVolts(hsc_12v_s) * 37.6;
+    vTaskDelay(10);
+  }
+}
+
+void VESC_output_function(void *parameter) {
+  for (;;) {
+    vTaskDelay(10);
+  }
+}
+
+void dash_output_function(void *parameter) {
+  for (;;) {
+    vTaskDelay(10);
+  }
+}
+
+void fan_control_function(void *parameter) {
+  for (;;) {
+    max_duty = 120.0 / float(hsc_12V) * 255.0;
+    if (max_duty > 255) {max_duty = 255;}
+    avg_cell_t = 0;
+    vTaskDelay(10);
+  }
+}
+
 void setup() {
   // put your setup code here, to run once:
-  initialise();
+    initialise();
+  // setup tasks
+    // safety (core 0)
+      xTaskCreatePinnedToCore(
+        safety_function,            // Task function
+        "safety",                   // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &safety_task,               // Task handle
+        0                           // Core 0
+      );
+    // CAN inputs (core 0)
+      xTaskCreatePinnedToCore(
+        CAN_input_function,         // Task function
+        "CAN input",                // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &CAN_input_task,            // Task handle
+        0                           // Core 0
+      );
+    // analog inputs (core 0)
+      xTaskCreatePinnedToCore(
+        analog_input_function,      // Task function
+        "analog input",             // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &analog_input_task,         // Task handle
+        0                           // Core 0
+      );
+    // VESC CAN outputs (core 1)
+      xTaskCreatePinnedToCore(
+        VESC_output_function,       // Task function
+        "VESC output",              // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &VESC_output_task,          // Task handle
+        1                           // Core 1
+      );
+    // dash/telemetry CAN outputs (core 1)
+      xTaskCreatePinnedToCore(
+        dash_output_function,       // Task function
+        "dash output",              // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &dash_output_task,          // Task handle
+        1                           // Core 1
+      );
+    // cooling fan control (core 1)
+      xTaskCreatePinnedToCore(
+        fan_control_function,       // Task function
+        "fan control",              // Task name
+        10000,                      // Stack size (bytes)
+        NULL,                       // Parameters
+        1,                          // Priority
+        &fan_control_task,          // Task handle
+        1                           // Core 1
+      );
 }
 
 void loop() {
@@ -571,29 +859,10 @@ void loop() {
     //}
 
 
-    update_cell_voltage();
-    check_cell_temp();
-    update_battery_current();
-    update_bms_state();
-    Serial.print(cell_v_1);
-    Serial.print(" ");
-    Serial.print(cell_v_2);
-    Serial.print(" ");
-    Serial.print(cell_v_3);
-    Serial.print(" ");
-    Serial.print(cell_v_4);
-    Serial.print(" ");
-    Serial.print(cell_v_5);
-    Serial.print(" ");
-    Serial.print(cell_v_6);
-    Serial.print(" ");
-    Serial.print(cell_v_7);
-    Serial.print(" ");
-    Serial.print(cell_v_8);
-    Serial.print(" ");
-    Serial.print(cell_v_9);
-    Serial.print(" ");
-    Serial.println(cell_v_10);
+  
+
+  // print data for debug
+    
 
     Serial.print(cell_t_1);
     Serial.print(" ");
@@ -630,6 +899,6 @@ void loop() {
     Serial.print(battery_current);
     Serial.print(" ");
     Serial.println(tinyBMS_state>>8, HEX);
-    delay(1000);
+    delayMicroseconds(62500);
     
 }
