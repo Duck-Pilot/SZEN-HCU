@@ -65,46 +65,20 @@
 
 
 //------------- Variables --------------
-  // Cell temperatures [°C/2]
-    uint8_t cell_t_1 = 0;
-    uint8_t cell_t_2 = 0;
-    uint8_t cell_t_3 = 0;
-    uint8_t cell_t_4 = 0;
-    uint8_t cell_t_5 = 0;
-    uint8_t cell_t_6 = 0;
-    uint8_t cell_t_7 = 0;
-    uint8_t cell_t_8 = 0;
-    uint8_t cell_t_9 = 0;
-    uint8_t cell_t_10 = 0;
-    uint8_t cell_t_11 = 0;
-    uint8_t prechg_t_12 = 0;
-    uint8_t cell_t_13 = 0;
-    uint8_t cell_t_14 = 0;
-    uint8_t cell_t_15 = 0;
-    uint8_t cell_t_16 = 0;
-    uint8_t avg_cell_t = 0;
-  // Overtemperature counters 
-  // incremented after every overtemp measurement, turn off the contactor if it's over 4 (>1 second) 
-    uint8_t overtemp_counter0 = 0;
-    uint8_t overtemp_counter1 = 0;
-    uint8_t overtemp_counter2 = 0;
-    uint8_t overtemp_counter3 = 0;
+  // Cell temperatures [°C/10]
+    uint16_t cell_temp[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    bool temp_error[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t overtemp_timer[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint16_t prechg_t = 0;
+    uint16_t avg_cell_t = 0;
+    float resistance[4] = {0, 0, 0, 0};
+    bool temperature_ok = 0;
   // counts bad sensors (improbable reading), resets after every measurement cycle 
     uint8_t temp_error_counter = 0;
   // Cell voltages [mV]
-    uint16_t cell_v_1 = 0;
-    uint16_t cell_v_2 = 0;
-    uint16_t cell_v_3 = 0;
-    uint16_t cell_v_4 = 0;
-    uint16_t cell_v_5 = 0;
-    uint16_t cell_v_6 = 0;
-    uint16_t cell_v_7 = 0;
-    uint16_t cell_v_8 = 0;
-    uint16_t cell_v_9 = 0;
-    uint16_t cell_v_10 = 0;
-  // Voltage error timeout counters
-    uint8_t overvoltage_timeout_counter = 0;
-    uint8_t undervoltage_timeout_counter = 0;
+    uint16_t cell_voltage[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t voltage_error[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    bool bms_ok = 0;
   // Driver inputs [%]
     int16_t steering = 0;
     bool clutch = 0;
@@ -120,8 +94,8 @@
       float f;
     } hsc_current;
   // Current error timeout counters
-    uint8_t overcurrent_timeout_counter = 0;
-    uint8_t undercurrent_timeout_counter = 0;
+    uint8_t overcurrent_timer = 0;
+    uint8_t undercurrent_timer = 0;
   // VESC data
     // Current [A/10]
       int16_t vesc_left_current = 0;
@@ -281,16 +255,31 @@ void initialise() {
   // Setup UART for TinyBMS
     Serial2.begin(115200, SERIAL_8N1, bms_rx, bms_tx, false);
     reset_BMS();
+    Serial2.end();
+    delay(100);
+    Serial2.begin(115200, SERIAL_8N1, bms_rx, bms_tx, false);
 
 }
 
 void switch_mux(uint8_t channel) {
-  if((channel & 0x01) != 0) {
-    digitalWrite(mux_1_out, HIGH);
-  } else {digitalWrite(mux_1_out, LOW);}
-  if((channel & 0x02) != 0) {
-    digitalWrite(mux_2_out, HIGH);
-  } else {digitalWrite(mux_2_out, LOW);}
+  switch (channel) {
+    case 0:
+      digitalWrite(mux_1_out, LOW);
+      digitalWrite(mux_2_out, LOW);
+      break;
+    case 1:
+      digitalWrite(mux_1_out, HIGH);
+      digitalWrite(mux_2_out, LOW);
+      break;
+    case 2:
+      digitalWrite(mux_1_out, HIGH);
+      digitalWrite(mux_2_out, HIGH);
+      break;
+    case 3:
+      digitalWrite(mux_1_out, LOW);
+      digitalWrite(mux_2_out, HIGH);
+      break;
+  }
   return;
 }
 
@@ -332,16 +321,16 @@ bool update_cell_voltage() {
     if(CRC16(uartReceived, 23) != (uartCRC[0] | (uartCRC[1]<<8))) {
       return false;}
   // process the received data
-    cell_v_1 = uartReceived[4] | (uartReceived[3]<<8);
-    cell_v_2 = uartReceived[6] | (uartReceived[5]<<8);
-    cell_v_3 = uartReceived[8] | (uartReceived[7]<<8);
-    cell_v_4 = uartReceived[10] | (uartReceived[9]<<8);
-    cell_v_5 = uartReceived[12] | (uartReceived[11]<<8);
-    cell_v_6 = uartReceived[14] | (uartReceived[13]<<8);
-    cell_v_7 = uartReceived[16] | (uartReceived[15]<<8);
-    cell_v_8 = uartReceived[18] | (uartReceived[17]<<8);
-    cell_v_9 = uartReceived[20] | (uartReceived[19]<<8);
-    cell_v_10 = uartReceived[22] | (uartReceived[21]<<8);
+    cell_voltage[0] = uartReceived[4] | (uartReceived[3]<<8);
+    cell_voltage[1] = uartReceived[6] | (uartReceived[5]<<8);
+    cell_voltage[2] = uartReceived[8] | (uartReceived[7]<<8);
+    cell_voltage[3] = uartReceived[10] | (uartReceived[9]<<8);
+    cell_voltage[4] = uartReceived[12] | (uartReceived[11]<<8);
+    cell_voltage[5] = uartReceived[14] | (uartReceived[13]<<8);
+    cell_voltage[6] = uartReceived[16] | (uartReceived[15]<<8);
+    cell_voltage[7] = uartReceived[18] | (uartReceived[17]<<8);
+    cell_voltage[8] = uartReceived[20] | (uartReceived[19]<<8);
+    cell_voltage[9] = uartReceived[22] | (uartReceived[21]<<8);
   return true;
 }
 
@@ -439,7 +428,7 @@ bool reset_BMS() {
   return true;
 }
 
-uint8_t resistance_temp(float resistance) {
+uint16_t resistance_temp(float resistance) {
   // Steinhart-Hart equation for NTC thermistor
   float steinhart;
   steinhart = resistance / 10000;     // (R/Ro)
@@ -448,7 +437,8 @@ uint8_t resistance_temp(float resistance) {
   steinhart += 1.0 / (25 + 273.15);    // + (1/To)
   steinhart = 1.0 / steinhart;         // Invert
   steinhart -= 273.15;                 // convert to °C
-  return uint8_t(steinhart);
+  steinhart = 15.433*steinhart-155.82;    // correction *shrug* + 10x °C
+  return uint16_t(steinhart);
 }
 
 bool check_cell_temp() {
@@ -458,67 +448,32 @@ bool check_cell_temp() {
       mux_channel = 0;}
     switch_mux(mux_channel); 
   // read the 4 resistances
-    float resistance_1 = float((8052000/(analogReadMilliVolts(temp_s_1)+1))-2440);
-    float resistance_2 = float((8052000/(analogReadMilliVolts(temp_s_2)+1))-2440);
-    float resistance_3 = float((8052000/(analogReadMilliVolts(temp_s_3)+1))-2440);
-    float resistance_4 = float((8052000/(analogReadMilliVolts(temp_s_4)+1))-2440);
+    resistance[0] = float((8052000/(analogReadMilliVolts(temp_s_1)+1))-2610);
+    resistance[1] = float((8052000/(analogReadMilliVolts(temp_s_2)+1))-2610);
+    resistance[2] = float((8052000/(analogReadMilliVolts(temp_s_3)+1))-2610);
+    resistance[3] = float((8052000/(analogReadMilliVolts(temp_s_4)+1))-2610);
+    
   // convert the resistances to temperatures and store them in the correct variables
-    switch(mux_channel) {
-      case 0:
-        cell_t_1 = resistance_temp(resistance_1);
-        cell_t_2 = resistance_temp(resistance_2);
-        cell_t_3 = resistance_temp(resistance_3);
-        cell_t_4 = resistance_temp(resistance_4);
-      // check if any temperature is over 60°C
-        if (cell_t_1 > 60 || cell_t_2 > 60 || cell_t_3 > 60 || cell_t_4 > 60) {overtemp_counter0++;}
-        else {overtemp_counter0 = 0;}
-        if (overtemp_counter0 > 4) {return false;}
-      // reset the error counter 
-        temp_error_counter = 0;
-      // check if any temperature is over 160°C, will be treated as a bad sensor
-        if (cell_t_1 > 160) {temp_error_counter++;}
-        if (cell_t_2 > 160) {temp_error_counter++;}
-        if (cell_t_3 > 160) {temp_error_counter++;}
-        if (cell_t_4 > 160) {temp_error_counter++;}
-      // check if any temperature is under 10°C, will be treated as a bad sensor
-        if (cell_t_1 < 10) {temp_error_counter++;}
-        if (cell_t_2 < 10) {temp_error_counter++;}
-        if (cell_t_3 < 10) {temp_error_counter++;}
-        if (cell_t_4 < 10) {temp_error_counter++;}
-      // if there are more than 3 bad sensors disable the battery (12 working sensors are required)
-        if (temp_error_counter > 3) {return false;}
-        break;
-      case 1:
-        cell_t_5 = resistance_temp(resistance_1);
-        cell_t_6 = resistance_temp(resistance_2);
-        cell_t_7 = resistance_temp(resistance_3);
-        cell_t_8 = resistance_temp(resistance_4);
-      // check if any temperature is over 60°C
-        if (cell_t_5 > 60 || cell_t_6 > 60 || cell_t_7 > 60 || cell_t_8 > 60) {overtemp_counter1++;}
-        else {overtemp_counter1 = 0;}
-        if (overtemp_counter1 > 4) {return false;}
-        break;
-      case 2:
-        cell_t_9 = resistance_temp(resistance_1);
-        cell_t_10 = resistance_temp(resistance_2);
-        cell_t_11 = resistance_temp(resistance_3);
-        prechg_t_12 = resistance_temp(resistance_4);
-      // check if any temperature is over 60°C
-        if (cell_t_9 > 60 || cell_t_10 > 60 || cell_t_11 > 60 || prechg_t_12 > 60) {overtemp_counter2++;}
-        else {overtemp_counter2 = 0;}
-        if (overtemp_counter2 > 4) {return false;}
-        break;
-      case 3:
-        cell_t_13 = resistance_temp(resistance_1);
-        cell_t_14 = resistance_temp(resistance_2);
-        cell_t_15 = resistance_temp(resistance_3);
-        cell_t_16 = resistance_temp(resistance_4);
-      // check if any temperature is over 60°C
-        if (cell_t_13 > 60 || cell_t_14 > 60 || cell_t_15 > 60 || cell_t_16 > 60) {overtemp_counter3++;}
-        else {overtemp_counter3 = 0;}
-        if (overtemp_counter3 > 4) {return false;}
-        break;
-    }  
+    for (uint8_t i = 0; i < 4; i++) {
+      uint16_t temp = resistance_temp(resistance[i]);
+      uint8_t cell = (mux_channel*4)+i;
+      // check the plausability of the temperature data
+      if (temp > 1600 || temp < 100) {temp_error[cell] = 1;}
+      else {
+        temp_error[cell] = 0;
+        // check if the cell is overtemperature
+        if (temp > 600) {overtemp_timer[cell] += 1;}
+        else {overtemp_timer[cell] = 0;}
+        // cell_temp[cell] = temp;
+      }
+      cell_temp[cell] = temp;
+    }
+    temp_error_counter = 0;
+    for (uint8_t i = 0; i < 16; i++) {
+      if(overtemp_timer[i] > 4) {return false;}
+      if(temp_error[i]) {temp_error_counter++;}
+    }
+    if (temp_error_counter > 2) {return false;}
   return true;
 }
 
@@ -543,58 +498,62 @@ bool check_bms_data() {
     if (tinyBMS_state == 0x9B) {return false;}
 
   // check if any cell voltage is over 4.2V
-    if (cell_v_1 > 42000 || cell_v_2 > 42000 || cell_v_3 > 42000 || cell_v_4 > 42000 || cell_v_5 > 42000 
-      || cell_v_6 > 42000 || cell_v_7 > 42000 || cell_v_8 > 42000 || cell_v_9 > 42000 || cell_v_10 > 42000) {overvoltage_timeout_counter++;}
-    else {overvoltage_timeout_counter = 0;}
-    if (overvoltage_timeout_counter >16) {return false;}
-
-  // check if any cell voltage is under 2.5V
-    if (cell_v_1 < 25000 || cell_v_2 < 25000 || cell_v_3 < 25000 || cell_v_4 < 25000 || cell_v_5 < 25000 
-      || cell_v_6 < 25000 || cell_v_7 < 25000 || cell_v_8 < 25000 || cell_v_9 < 25000 || cell_v_10 < 25000) {undervoltage_timeout_counter++;}
-    else {undervoltage_timeout_counter = 0;}
-    if (undervoltage_timeout_counter >16) {return false;}
-
+    for (uint8_t i = 0; i<10; i++) {
+      if (cell_voltage[i] > 42000 || cell_voltage[i] < 25000) {voltage_error[i]++;}
+      else {voltage_error[i] = 0;}
+      if (voltage_error[i] > 16) {return false;}
+    }
   // check if current is over 560A
   // timeout for overcurrent is 3s (datasheet)
-    if (battery_current > 560) {overcurrent_timeout_counter++;}
-    else {overcurrent_timeout_counter = 0;}
-    if (overcurrent_timeout_counter > 48) {return false;}
+    if (battery_current > 560) {overcurrent_timer++;}
+    else {overcurrent_timer = 0;}
+    if (overcurrent_timer > 48) {return false;}
 
   // check if charge current is over 60A
-    if (battery_current < -60) {undercurrent_timeout_counter++;}
-    else {undercurrent_timeout_counter = 0;}
-    if (undercurrent_timeout_counter > 16) {return false;}
+    if (battery_current < -60) {undercurrent_timer++;}
+    else {undercurrent_timer = 0;}
+    if (undercurrent_timer > 16) {return false;}
   
   return true;
 }
 
 void send_cell_temp_can() {
-  // send the first 8 temperatures
+  // send the first 4 temperatures
     CANMessage display_temp_1;
     display_temp_1.id = 0x600;
     display_temp_1.len = 8;
-    display_temp_1.data[0] = cell_t_1;
-    display_temp_1.data[1] = cell_t_2;
-    display_temp_1.data[2] = cell_t_3;
-    display_temp_1.data[3] = cell_t_4;
-    display_temp_1.data[4] = cell_t_5;
-    display_temp_1.data[5] = cell_t_6;
-    display_temp_1.data[6] = cell_t_7;
-    display_temp_1.data[7] = cell_t_8;
+    display_temp_1.data16[0] = cell_temp[0];
+    display_temp_1.data16[1] = cell_temp[1];
+    display_temp_1.data16[2] = cell_temp[2];
+    display_temp_1.data16[3] = cell_temp[3];
     mcp_can.tryToSend(display_temp_1);
-  // send the second 8 temperatures
+  // send the second 4 temperatures
     CANMessage display_temp_2;
     display_temp_2.id = 0x601;
     display_temp_2.len = 8;
-    display_temp_2.data[0] = cell_t_9;
-    display_temp_2.data[1] = cell_t_10;
-    display_temp_2.data[2] = cell_t_11;
-    display_temp_2.data[3] = prechg_t_12;
-    display_temp_2.data[4] = cell_t_13;
-    display_temp_2.data[5] = cell_t_14;
-    display_temp_2.data[6] = cell_t_15;
-    display_temp_2.data[7] = cell_t_16; 
+    display_temp_2.data16[0] = cell_temp[4];
+    display_temp_2.data16[1] = cell_temp[5];
+    display_temp_2.data16[2] = cell_temp[6];
+    display_temp_2.data16[3] = cell_temp[7];
     mcp_can.tryToSend(display_temp_2);
+  // send the third 4 temperatures
+    CANMessage display_temp_3;
+    display_temp_3.id = 0x602;
+    display_temp_3.len = 8;
+    display_temp_3.data16[0] = cell_temp[8];
+    display_temp_3.data16[1] = cell_temp[9];
+    display_temp_3.data16[2] = cell_temp[10]; 
+    display_temp_3.data16[3] = prechg_t;
+    mcp_can.tryToSend(display_temp_3);
+  // send the fourth 4 temperatures
+    CANMessage display_temp_4;
+    display_temp_4.id = 0x603;
+    display_temp_4.len = 8;
+    display_temp_4.data16[0] = cell_temp[12];
+    display_temp_4.data16[1] = cell_temp[13];
+    display_temp_4.data16[2] = cell_temp[14]; 
+    display_temp_4.data16[3] = cell_temp[15];
+    mcp_can.tryToSend(display_temp_4);
 }
 
 void send_cell_voltage_can() {
@@ -602,26 +561,26 @@ void send_cell_voltage_can() {
     CANMessage display_voltage_1;
     display_voltage_1.id = 0x610;
     display_voltage_1.len = 8;
-    display_voltage_1.data16[0] = cell_v_1;
-    display_voltage_1.data16[1] = cell_v_2;
-    display_voltage_1.data16[2] = cell_v_3;
-    display_voltage_1.data16[3] = cell_v_4;
+    display_voltage_1.data16[0] = cell_voltage[0];
+    display_voltage_1.data16[1] = cell_voltage[1];
+    display_voltage_1.data16[2] = cell_voltage[2];
+    display_voltage_1.data16[3] = cell_voltage[3];
     mcp_can.tryToSend(display_voltage_1);
   // send the second 4 voltages
     CANMessage display_voltage_2;
     display_voltage_2.id = 0x611;
     display_voltage_2.len = 8;
-    display_voltage_2.data16[0] = cell_v_5;
-    display_voltage_2.data16[1] = cell_v_6;
-    display_voltage_2.data16[2] = cell_v_7;
-    display_voltage_2.data16[3] = cell_v_8;
+    display_voltage_2.data16[0] = cell_voltage[4];
+    display_voltage_2.data16[1] = cell_voltage[5];
+    display_voltage_2.data16[2] = cell_voltage[6];
+    display_voltage_2.data16[3] = cell_voltage[7];
     mcp_can.tryToSend(display_voltage_2);
   // send the last 2 voltages, output voltage and battery current
     CANMessage display_voltage_3;
     display_voltage_3.id = 0x612;
     display_voltage_3.len = 8;
-    display_voltage_3.data16[0] = cell_v_9;
-    display_voltage_3.data16[1] = cell_v_10;
+    display_voltage_3.data16[0] = cell_voltage[8];
+    display_voltage_3.data16[1] = cell_voltage[9];
     display_voltage_3.data16[2] = hsc_output;
     display_voltage_3.data16[3] = battery_current;
     mcp_can.tryToSend(display_voltage_3);
@@ -647,34 +606,18 @@ void send_vesc_can() {
 void safety_function(void *parameter) {
   TickType_t xLastRanSafety;
   xLastRanSafety = xTaskGetTickCount();
-  TickType_t xSafetyFrequency = 62 / portTICK_PERIOD_MS; // around 16 Hz
+  TickType_t xSafetyFrequency = 62 / portTICK_PERIOD_MS; // around 16 Hz is 62
   for (;;) {
   // check the battery parameters
-    contactor_en = check_cell_temp() && check_bms_data();
+    temperature_ok = check_cell_temp();
+    bms_ok = check_bms_data();
+    contactor_en = temperature_ok && bms_ok;
   // change enable output state if it changed
     if(contactor_en != last_contactor_en) {
       digitalWrite(contactor_en_out, contactor_en);
       last_contactor_en = contactor_en;}
   // output voltages and temperatures for debug
-    Serial.print(cell_v_1);
-    Serial.print(" ");
-    Serial.print(cell_v_2);
-    Serial.print(" ");
-    Serial.print(cell_v_3);
-    Serial.print(" ");
-    Serial.print(cell_v_4);
-    Serial.print(" ");
-    Serial.print(cell_v_5);
-    Serial.print(" ");
-    Serial.print(cell_v_6);
-    Serial.print(" ");
-    Serial.print(cell_v_7);
-    Serial.print(" ");
-    Serial.print(cell_v_8);
-    Serial.print(" ");
-    Serial.print(cell_v_9);
-    Serial.print(" ");
-    Serial.println(cell_v_10);
+  
   // check MaxxECU if the engine is running
   // set the engine_running variable high/low after a 5 second delay as a filter
     if(!engine_running && (ecu_rpm > 1500)) {
@@ -693,7 +636,74 @@ void safety_function(void *parameter) {
     if(bms_ign != last_bms_ign) {
       digitalWrite(bms_ign_out, bms_ign);
       last_bms_ign = bms_ign;}
+    // print data for debug
+    Serial.print(temperature_ok);
+    Serial.print(" "),
+    Serial.println(bms_ok);
+    Serial.print(cell_voltage[0]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[1]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[2]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[3]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[4]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[5]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[6]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[7]);
+    Serial.print(" ");
+    Serial.print(cell_voltage[8]);
+    Serial.print(" ");
+    Serial.println(cell_voltage[9]);
     
+
+    Serial.print(cell_temp[0]);
+    Serial.print(" ");
+    Serial.print(cell_temp[1]);
+    Serial.print(" ");
+    Serial.print(cell_temp[2]);
+    Serial.print(" ");
+    Serial.print(cell_temp[3]);
+    Serial.print(" ");
+    Serial.print(cell_temp[4]);
+    Serial.print(" ");
+    Serial.print(cell_temp[5]);
+    Serial.print(" ");
+    Serial.print(cell_temp[6]);
+    Serial.print(" ");
+    Serial.print(cell_temp[7]);
+    Serial.print(" ");
+    Serial.print(cell_temp[8]);
+    Serial.print(" ");
+    Serial.print(cell_temp[9]);
+    Serial.print(" ");
+    Serial.print(cell_temp[10]);
+    Serial.print(" ");
+    Serial.print(cell_temp[11]);
+    Serial.print(" ");
+    Serial.print(cell_temp[12]);
+    Serial.print(" ");
+    Serial.print(cell_temp[13]);
+    Serial.print(" ");
+    Serial.print(cell_temp[14]);
+    Serial.print(" ");
+    Serial.println(cell_temp[15]);
+    
+    Serial.print(battery_current);
+    Serial.print(" ");
+    Serial.println(tinyBMS_state>>8, HEX);
+
+    Serial.print(bms_v_timeout_counter);
+    Serial.print(" ");
+    Serial.print(bms_c_timeout_counter);
+    Serial.print(" ");
+    Serial.print(bms_s_timeout_counter);
+    Serial.print(" ");
+    Serial.println(temp_error_counter);
     vTaskDelayUntil(&xLastRanSafety, xSafetyFrequency);
   }
 }
@@ -764,10 +774,21 @@ void dash_output_function(void *parameter) {
 
 void fan_control_function(void *parameter) {
   for (;;) {
-    max_duty = 120.0 / float(hsc_12V) * 255.0;
-    if (max_duty > 255) {max_duty = 255;}
+    //max_duty = 120.0 / float(hsc_12V) * 255.0;
+    //if (max_duty > 255) {max_duty = 255;}
+    max_duty = 210;
+    // calculate average cell temperature
     avg_cell_t = 0;
-    vTaskDelay(10);
+    for (uint8_t i = 0; i < 16; i++) {
+      avg_cell_t += cell_temp[i];
+    }
+    avg_cell_t /= 16;
+    // calculate duty cycle based on temperature
+    fan_pwm = ((float(avg_cell_t) / 371.0) - 0.52 ) * max_duty;
+    if (fan_pwm < 100) {fan_pwm = 0;}
+    if (fan_pwm > max_duty) {fan_pwm = max_duty;}
+    ledcWrite(0, fan_pwm);
+    vTaskDelay(100);
   }
 }
 
@@ -786,6 +807,7 @@ void setup() {
         0                           // Core 0
       );
     // CAN inputs (core 0)
+    /*
       xTaskCreatePinnedToCore(
         CAN_input_function,         // Task function
         "CAN input",                // Task name
@@ -795,7 +817,9 @@ void setup() {
         &CAN_input_task,            // Task handle
         0                           // Core 0
       );
-    // analog inputs (core 0)
+    */
+    // analog inputs (core 0) 
+    /*
       xTaskCreatePinnedToCore(
         analog_input_function,      // Task function
         "analog input",             // Task name
@@ -805,7 +829,9 @@ void setup() {
         &analog_input_task,         // Task handle
         0                           // Core 0
       );
+    */
     // VESC CAN outputs (core 1)
+    /*
       xTaskCreatePinnedToCore(
         VESC_output_function,       // Task function
         "VESC output",              // Task name
@@ -815,7 +841,9 @@ void setup() {
         &VESC_output_task,          // Task handle
         1                           // Core 1
       );
+    */
     // dash/telemetry CAN outputs (core 1)
+    /*
       xTaskCreatePinnedToCore(
         dash_output_function,       // Task function
         "dash output",              // Task name
@@ -825,7 +853,9 @@ void setup() {
         &dash_output_task,          // Task handle
         1                           // Core 1
       );
+    */
     // cooling fan control (core 1)
+    /*
       xTaskCreatePinnedToCore(
         fan_control_function,       // Task function
         "fan control",              // Task name
@@ -835,6 +865,7 @@ void setup() {
         &fan_control_task,          // Task handle
         1                           // Core 1
       );
+    */
 }
 
 void loop() {
@@ -843,11 +874,6 @@ void loop() {
     //int32_t angular_rate[3] = {};
     //Gyro.Get_X_Axes(acceleration);
     //Gyro.Get_G_Axes(angular_rate);
-    /*Serial.print(acceleration[0]);
-    Serial.print(" ");
-    Serial.print(acceleration[1]);
-    Serial.print(" ");
-    Serial.println(acceleration[2]);*/
     //Serial.println(CRC16(dummy_data, 3), HEX);
     //uint8_t output_data[4] = {read_cell_voltage[0], read_cell_voltage[1], 0x7E, 0xD9};
     //output_data = CRC16(read_cell_voltage);
@@ -857,48 +883,12 @@ void loop() {
     //  Serial.println(Serial2.read(), HEX);
     //  delay(25);
     //}
-
-
+    //check_bms_data();
+    //check_cell_temp();
   
 
-  // print data for debug
+  
     
-
-    Serial.print(cell_t_1);
-    Serial.print(" ");
-    Serial.print(cell_t_2);
-    Serial.print(" ");
-    Serial.print(cell_t_3);
-    Serial.print(" ");
-    Serial.print(cell_t_4);
-    Serial.print(" ");
-    Serial.print(cell_t_5);
-    Serial.print(" ");
-    Serial.print(cell_t_6);
-    Serial.print(" ");
-    Serial.print(cell_t_7);
-    Serial.print(" ");
-    Serial.print(cell_t_8);
-    Serial.print(" ");
-    Serial.print(cell_t_9);
-    Serial.print(" ");
-    Serial.print(cell_t_10);
-    Serial.print(" ");
-    Serial.print(cell_t_11);
-    Serial.print(" ");
-    Serial.print(prechg_t_12);
-    Serial.print(" ");
-    Serial.print(cell_t_13);
-    Serial.print(" ");
-    Serial.print(cell_t_14);
-    Serial.print(" ");
-    Serial.print(cell_t_15);
-    Serial.print(" ");
-    Serial.println(cell_t_16);
-
-    Serial.print(battery_current);
-    Serial.print(" ");
-    Serial.println(tinyBMS_state>>8, HEX);
-    delayMicroseconds(62500);
+    delayMicroseconds(1);
     
 }
