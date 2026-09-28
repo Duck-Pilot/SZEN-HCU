@@ -13,9 +13,11 @@
   https://enepaq.com/wp-content/uploads/2025/02/Communication-Protocols-%E2%80%93-Battery-Management-System-BMS-Tiny-BMS-Enepaq.pdf
 */
 
+#include <Arduino.h>
 #include <ASM330LHHSensor.h>
 #include <ACAN2515.h>
 #include <ACAN_ESP32.h>
+#include <esp_task_wdt.h>
 
 // Communication 
   // I2C for ASM330 gyro
@@ -62,6 +64,9 @@
   // Mux for switching the active temperature sensor
     #define mux_1_out 42
     #define mux_2_out 41
+
+// Watchdog
+  #define WDT_TIMEOUT_S 1
 
 
 //------------- Variables --------------
@@ -201,6 +206,47 @@
   
   ASM330LHHSensor Gyro(&Wire, 0x6A);
   
+uint16_t CRC16(const uint8_t* data, uint16_t length) {
+  // CRC generation for TinyBMS, stolen from the communication protocols doc
+  uint8_t tmp;
+  uint16_t crcWord = 0xFFFF;
+  while (length--) {
+    tmp = *data++ ^ crcWord;
+    crcWord >>= 8;
+    crcWord ^= crcTable[tmp];
+  }
+  return crcWord;
+}
+
+
+bool reset_BMS() {
+  // clear the RX buffer
+    while (Serial2.available()) {
+      Serial2.read();
+    }
+  // request bms reset
+    Serial2.write(reset_tinybms, 5);
+  // wait for response
+    while (!Serial2.available()) {
+      vTaskDelay(1);
+    }
+  // check first 3 bytes 0xAA, 0x01, 0x02
+    uint8_t uartReceived[3] = {};
+    Serial2.readBytes(uartReceived, 3);
+    if (uartReceived[0] != 0xAA) {
+      return false;}
+    if (uartReceived[1] != 0x01) {
+      return false;}
+    if (uartReceived[2] != 0x02) {
+      return false;}
+  // generate CRC for the message that was received
+    uint8_t uartCRC[2] = {};
+    Serial2.readBytes(uartCRC, 2);
+    if (CRC16(uartReceived, 3) != (uartCRC[0] | (uartCRC[1]<<8))) {
+      return false;}
+    delay(10000);
+  return true;
+}
 
 void initialise() {
   // Setup outputs
@@ -283,16 +329,68 @@ void switch_mux(uint8_t channel) {
   return;
 }
 
-// CRC generation for TinyBMS, stolen from the communication protocols doc
-uint16_t CRC16(const uint8_t* data, uint16_t length) {
-  uint8_t tmp;
-  uint16_t crcWord = 0xFFFF;
-  while (length--) {
-    tmp = *data++ ^ crcWord;
-    crcWord >>= 8;
-    crcWord ^= crcTable[tmp];
-  }
-  return crcWord;
+void printVoltages() {
+  Serial.print(cell_voltage[0]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[1]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[2]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[3]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[4]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[5]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[6]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[7]);
+  Serial.print(" ");
+  Serial.print(cell_voltage[8]);
+  Serial.print(" ");
+  Serial.println(cell_voltage[9]);
+  return;
+}
+
+void printTemperatures() {
+  Serial.print(cell_temp[0]);
+  Serial.print(" ");
+  Serial.print(cell_temp[1]);
+  Serial.print(" ");
+  Serial.print(cell_temp[2]);
+  Serial.print(" ");
+  Serial.print(cell_temp[3]);
+  Serial.print(" ");
+  Serial.print(cell_temp[4]);
+  Serial.print(" ");
+  Serial.print(cell_temp[5]);
+  Serial.print(" ");
+  Serial.print(cell_temp[6]);
+  Serial.print(" ");
+  Serial.print(cell_temp[7]);
+  Serial.print(" ");
+  Serial.print(cell_temp[8]);
+  Serial.print(" ");
+  Serial.print(cell_temp[9]);
+  Serial.print(" ");
+  Serial.print(cell_temp[10]);
+  Serial.print(" ");
+  Serial.print(cell_temp[11]);
+  Serial.print(" ");
+  Serial.print(cell_temp[12]);
+  Serial.print(" ");
+  Serial.print(cell_temp[13]);
+  Serial.print(" ");
+  Serial.print(cell_temp[14]);
+  Serial.print(" ");
+  Serial.println(cell_temp[15]);
+  return;
+}
+
+void printCurrentAndStatus() {
+  Serial.print(battery_current),
+  Serial.print(" ");
+  Serial.println(tinyBMS_state >> 8, HEX);
 }
 
 bool update_cell_voltage() {
@@ -399,34 +497,7 @@ bool update_bms_state() {
   return true;
 }
 
-bool reset_BMS() {
-  // clear the RX buffer
-    while (Serial2.available()) {
-      Serial2.read();
-    }
-  // request bms reset
-    Serial2.write(reset_tinybms, 5);
-  // wait for response
-    while (!Serial2.available()) {
-      vTaskDelay(1);
-    }
-  // check first 3 bytes 0xAA, 0x01, 0x02
-    uint8_t uartReceived[3] = {};
-    Serial2.readBytes(uartReceived, 3);
-    if (uartReceived[0] != 0xAA) {
-      return false;}
-    if (uartReceived[1] != 0x01) {
-      return false;}
-    if (uartReceived[2] != 0x02) {
-      return false;}
-  // generate CRC for the message that was received
-    uint8_t uartCRC[2] = {};
-    Serial2.readBytes(uartCRC, 2);
-    if (CRC16(uartReceived, 3) != (uartCRC[0] | (uartCRC[1]<<8))) {
-      return false;}
-    delay(10000);
-  return true;
-}
+
 
 uint16_t resistance_temp(float resistance) {
   // Steinhart-Hart equation for NTC thermistor
@@ -497,7 +568,7 @@ bool check_bms_data() {
   // check if the BMS is in a fault state
     if (tinyBMS_state == 0x9B) {return false;}
 
-  // check if any cell voltage is over 4.2V
+  // check if any cell voltage is outside the limits
     for (uint8_t i = 0; i<10; i++) {
       if (cell_voltage[i] > 42000 || cell_voltage[i] < 25000) {voltage_error[i]++;}
       else {voltage_error[i] = 0;}
@@ -586,6 +657,22 @@ void send_cell_voltage_can() {
     mcp_can.tryToSend(display_voltage_3);
 }
 
+void send_battery_diag_can() {
+  // send diag data about the battery
+    CANMessage diag_1;
+    diag_1.id = 0x620;
+    diag_1.len = 8;
+    diag_1.data[0] = temp_error[0] | temp_error[1] < 1 | temp_error[2] < 2 | temp_error[3] < 3 | temp_error[4] < 4 | 
+                     temp_error[5] < 5 | temp_error[6] < 6 | temp_error[7] < 7;
+    diag_1.data[1] = temp_error[8] | temp_error[9] < 1 | temp_error[10] < 2 | temp_error[11] < 3 | temp_error[12] < 4 | 
+                     temp_error[13] < 5 | temp_error[14] < 6 | temp_error[15] < 7;
+    diag_1.data[2] = temp_error_counter;
+    diag_1.data[3] = bms_v_timeout_counter;
+    diag_1.data[4] = bms_c_timeout_counter;
+    diag_1.data[5] = bms_s_timeout_counter;
+    mcp_can.tryToSend(diag_1);
+}
+
 void send_vesc_can() {
   // send the requested current to left VESC ID 79
     CANMessage vesc_left_current_msg;
@@ -607,7 +694,10 @@ void safety_function(void *parameter) {
   TickType_t xLastRanSafety;
   xLastRanSafety = xTaskGetTickCount();
   TickType_t xSafetyFrequency = 62 / portTICK_PERIOD_MS; // around 16 Hz is 62
+  esp_task_wdt_add(NULL);
   for (;;) {
+  // feed the watchdog
+    esp_task_wdt_reset();
   // check the battery parameters
     temperature_ok = check_cell_temp();
     bms_ok = check_bms_data();
@@ -637,73 +727,6 @@ void safety_function(void *parameter) {
       digitalWrite(bms_ign_out, bms_ign);
       last_bms_ign = bms_ign;}
     // print data for debug
-    Serial.print(temperature_ok);
-    Serial.print(" "),
-    Serial.println(bms_ok);
-    Serial.print(cell_voltage[0]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[1]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[2]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[3]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[4]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[5]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[6]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[7]);
-    Serial.print(" ");
-    Serial.print(cell_voltage[8]);
-    Serial.print(" ");
-    Serial.println(cell_voltage[9]);
-    
-
-    Serial.print(cell_temp[0]);
-    Serial.print(" ");
-    Serial.print(cell_temp[1]);
-    Serial.print(" ");
-    Serial.print(cell_temp[2]);
-    Serial.print(" ");
-    Serial.print(cell_temp[3]);
-    Serial.print(" ");
-    Serial.print(cell_temp[4]);
-    Serial.print(" ");
-    Serial.print(cell_temp[5]);
-    Serial.print(" ");
-    Serial.print(cell_temp[6]);
-    Serial.print(" ");
-    Serial.print(cell_temp[7]);
-    Serial.print(" ");
-    Serial.print(cell_temp[8]);
-    Serial.print(" ");
-    Serial.print(cell_temp[9]);
-    Serial.print(" ");
-    Serial.print(cell_temp[10]);
-    Serial.print(" ");
-    Serial.print(cell_temp[11]);
-    Serial.print(" ");
-    Serial.print(cell_temp[12]);
-    Serial.print(" ");
-    Serial.print(cell_temp[13]);
-    Serial.print(" ");
-    Serial.print(cell_temp[14]);
-    Serial.print(" ");
-    Serial.println(cell_temp[15]);
-    
-    Serial.print(battery_current);
-    Serial.print(" ");
-    Serial.println(tinyBMS_state>>8, HEX);
-
-    Serial.print(bms_v_timeout_counter);
-    Serial.print(" ");
-    Serial.print(bms_c_timeout_counter);
-    Serial.print(" ");
-    Serial.print(bms_s_timeout_counter);
-    Serial.print(" ");
-    Serial.println(temp_error_counter);
     vTaskDelayUntil(&xLastRanSafety, xSafetyFrequency);
   }
 }
@@ -768,7 +791,10 @@ void VESC_output_function(void *parameter) {
 
 void dash_output_function(void *parameter) {
   for (;;) {
-    vTaskDelay(10);
+    printVoltages();
+    printTemperatures();
+    printCurrentAndStatus();
+    vTaskDelay(200);
   }
 }
 
@@ -787,14 +813,17 @@ void fan_control_function(void *parameter) {
     fan_pwm = ((float(avg_cell_t) / 371.0) - 0.52 ) * max_duty;
     if (fan_pwm < 100) {fan_pwm = 0;}
     if (fan_pwm > max_duty) {fan_pwm = max_duty;}
+
     ledcWrite(0, fan_pwm);
-    vTaskDelay(100);
+    vTaskDelay(1000);
   }
 }
 
 void setup() {
   // put your setup code here, to run once:
     initialise();
+  // Setup watchdog timer for critical tasks
+    esp_task_wdt_init(WDT_TIMEOUT_S, true);
   // setup tasks
     // safety (core 0)
       xTaskCreatePinnedToCore(
@@ -843,7 +872,7 @@ void setup() {
       );
     */
     // dash/telemetry CAN outputs (core 1)
-    /*
+    
       xTaskCreatePinnedToCore(
         dash_output_function,       // Task function
         "dash output",              // Task name
@@ -853,9 +882,9 @@ void setup() {
         &dash_output_task,          // Task handle
         1                           // Core 1
       );
-    */
+    
     // cooling fan control (core 1)
-    /*
+    
       xTaskCreatePinnedToCore(
         fan_control_function,       // Task function
         "fan control",              // Task name
@@ -865,10 +894,15 @@ void setup() {
         &fan_control_task,          // Task handle
         1                           // Core 1
       );
-    */
+    
+  
 }
 
 void loop() {
+    vTaskDelete(NULL); // Deletes the loopTask, where we're going we don't need it
+}
+
+//void loop() {
   // put your main code here, to run repeatedly:
     //int32_t acceleration[3] = {};
     //int32_t angular_rate[3] = {};
@@ -885,10 +919,13 @@ void loop() {
     //}
     //check_bms_data();
     //check_cell_temp();
-  
+    //printVoltages();
+    //printTemperatures();
 
   
     
-    delayMicroseconds(1);
+    //delay(1000);
     
-}
+//}
+
+
