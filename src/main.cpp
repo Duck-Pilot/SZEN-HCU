@@ -109,8 +109,10 @@
       uint16_t vesc_left_voltage = 0;
       uint16_t vesc_right_voltage = 0;
     // Speed [ERPM]
-      uint16_t vesc_left_erpm = 0;
-      uint16_t vesc_right_erpm = 0;
+      int32_t vesc_left_erpm = 0;
+      int32_t vesc_right_erpm = 0;
+      int32_t vesc_left_rpm_target = 0;
+      int32_t vesc_right_rpm_target = 0;
     // Temperature [°C/2]
       uint8_t vesc_left_temp = 0;
       uint8_t vesc_right_temp = 0;
@@ -662,15 +664,26 @@ void send_battery_diag_can() {
     CANMessage diag_1;
     diag_1.id = 0x620;
     diag_1.len = 8;
-    diag_1.data[0] = temp_error[0] | temp_error[1] < 1 | temp_error[2] < 2 | temp_error[3] < 3 | temp_error[4] < 4 | 
-                     temp_error[5] < 5 | temp_error[6] < 6 | temp_error[7] < 7;
-    diag_1.data[1] = temp_error[8] | temp_error[9] < 1 | temp_error[10] < 2 | temp_error[11] < 3 | temp_error[12] < 4 | 
-                     temp_error[13] < 5 | temp_error[14] < 6 | temp_error[15] < 7;
+    diag_1.data[0] = temp_error[0] | temp_error[1] << 1 | temp_error[2] << 2 | temp_error[3] << 3 | temp_error[4] << 4 | 
+                     temp_error[5] << 5 | temp_error[6] << 6 | temp_error[7] << 7;
+    diag_1.data[1] = temp_error[8] | temp_error[9] << 1 | temp_error[10] << 2 | temp_error[11] << 3 | temp_error[12] << 4 | 
+                     temp_error[13] << 5 | temp_error[14] << 6 | temp_error[15] << 7;
     diag_1.data[2] = temp_error_counter;
     diag_1.data[3] = bms_v_timeout_counter;
     diag_1.data[4] = bms_c_timeout_counter;
     diag_1.data[5] = bms_s_timeout_counter;
+    diag_1.data[6] = fan_pwm;
+    diag_1.data[7] = temperature_ok | bms_ok << 1 | contactor_en << 2 | bms_ign << 3 | engine_running << 4;
     mcp_can.tryToSend(diag_1);
+}
+
+void send_hybrid_diag_can() {
+  // send diag data about the hybrid system
+    CANMessage diag_2;
+    diag_2.id = 0x621;
+    diag_2.len = 8;
+    diag_2.data[0] = 0;
+    mcp_can.tryToSend(diag_2);
 }
 
 void send_vesc_can() {
@@ -688,6 +701,32 @@ void send_vesc_can() {
     vesc_right_current_msg.ext = true;
     vesc_right_current_msg.data16[0] = vesc_right_current_target;
     ACAN_ESP32::can.tryToSend(vesc_right_current_msg);
+}
+
+void send_vesc_can_rpm() {
+  // only used for testing and breaking in the gears
+  // send the requested rpm to left VESC ID 79 (hex 4F)
+    CANMessage vesc_left_rpm_msg;
+    vesc_left_rpm_msg.id = 0x034F;
+    vesc_left_rpm_msg.len = 8;
+    vesc_left_rpm_msg.ext = true;
+    vesc_left_rpm_msg.data[0] = vesc_left_rpm_target >> 24;
+    vesc_left_rpm_msg.data[1] = (vesc_left_rpm_target & 0xFFFFFF) >>16;
+    vesc_left_rpm_msg.data[2] = (vesc_left_rpm_target & 0xFFFF) >>8;
+    vesc_left_rpm_msg.data[3] = (vesc_left_rpm_target & 0xFF);
+    //vesc_left_rpm_msg.data_s32[0] = vesc_left_rpm_target;
+    ACAN_ESP32::can.tryToSend(vesc_left_rpm_msg);
+  // send the requested rpm to right VESC ID 108 (hex 6C)
+    CANMessage vesc_right_rpm_msg;
+    vesc_right_rpm_msg.id = 0x036C;
+    vesc_right_rpm_msg.len = 8;
+    vesc_right_rpm_msg.ext = true;
+    vesc_right_rpm_msg.data[0] = vesc_right_rpm_target >> 24;
+    vesc_right_rpm_msg.data[1] = (vesc_right_rpm_target & 0xFFFFFF) >>16;
+    vesc_right_rpm_msg.data[2] = (vesc_right_rpm_target & 0xFFFF) >>8;
+    vesc_right_rpm_msg.data[3] = (vesc_right_rpm_target & 0xFF);
+    //vesc_right_rpm_msg.data_s32[0] = vesc_right_rpm_target;
+    ACAN_ESP32::can.tryToSend(vesc_right_rpm_msg);
 }
 
 void safety_function(void *parameter) {
@@ -755,6 +794,17 @@ void CAN_input_function(void *parameter) {
           ecu_apps_timeout_counter = 0;
           break;
         // PDU inputs?
+      }
+    }
+
+    if (ACAN_ESP32::can.available()) {
+      CANMessage ESP_receive_msg;
+      ACAN_ESP32::can.receive(ESP_receive_msg);
+      switch(ESP_receive_msg.id) {
+        case 0x094F: // Status 1, 79  left
+          break;
+        case 0x096C: // Status 1, 108 right
+          break;
       }
     }
     ecu_rpm_timeout_counter++;
